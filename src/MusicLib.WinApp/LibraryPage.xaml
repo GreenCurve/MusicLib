@@ -31,8 +31,9 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="{x:Bind Star}" FontSize="18"
-                                   Tag="{x:Bind}" Tapped="OnStarTapped"/>
+                        <Button Grid.Column="0" Content="{x:Bind Star}" FontSize="18"
+                                Background="Transparent" BorderThickness="0" Padding="8,4"
+                                Click="OnStarClick"/>
                         <StackPanel Grid.Column="1">
                             <TextBlock Text="{x:Bind Display}"/>
                             <TextBlock Text="{x:Bind Sub}" FontSize="11" Opacity="0.7"/>

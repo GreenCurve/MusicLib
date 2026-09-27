@@ -20,6 +20,7 @@ public class PlayerActivity : Activity
     private string _hash = "";
     private bool _playRegistered;
     private bool _userSeeking;
+    private float? _pendingSeek;
 
     private TextView _titleView = null!;
     private TextView _elapsed = null!;
@@ -80,7 +81,16 @@ public class PlayerActivity : Activity
         _seekBar.StopTrackingTouch += (_, e) =>
         {
             _userSeeking = false;
-            if (_mediaPlayer.IsSeekable) _mediaPlayer.Position = e.SeekBar!.Progress / 1000f;
+            var fraction = e.SeekBar!.Progress / 1000f;
+            if (_mediaPlayer.State is VLCState.Ended or VLCState.Stopped)
+            {
+                _pendingSeek = fraction;
+                PlayFromCurrentFile();
+            }
+            else if (_mediaPlayer.IsSeekable)
+            {
+                _mediaPlayer.Position = fraction;
+            }
         };
 
         // Audio-only: no video output is attached, so this also works fine for the
@@ -91,16 +101,29 @@ public class PlayerActivity : Activity
         {
             _playPause.Text = "Pause";
             if (!_playRegistered) { _playRegistered = true; RegisterPlay(); }
+            if (_pendingSeek is { } seek && _mediaPlayer.IsSeekable)
+            {
+                _mediaPlayer.Position = seek;
+                _pendingSeek = null;
+            }
         });
         _mediaPlayer.Paused += (_, _) => RunOnUiThread(() => _playPause.Text = "Play");
         _mediaPlayer.EndReached += (_, _) => RunOnUiThread(() => _playPause.Text = "Play");
 
-        using var media = new Media(_libVLC, _filePath, FromType.FromPath);
-        _mediaPlayer.Play(media);
+        PlayFromCurrentFile();
 
         _handler = new Handler(Looper.MainLooper!);
         _tick = new Java.Lang.Runnable(UpdateProgress);
         _handler.PostDelayed(_tick, 500);
+    }
+
+    // Once playback reaches the end, LibVLC tears the stream down — just setting Position
+    // afterward does nothing. Restarting the media and applying the seek once it's playing
+    // again is what actually resumes it.
+    private void PlayFromCurrentFile()
+    {
+        using var media = new Media(_libVLC, _filePath, FromType.FromPath);
+        _mediaPlayer.Play(media);
     }
 
     private void UpdateProgress()
@@ -123,6 +146,7 @@ public class PlayerActivity : Activity
     private void TogglePlayPause()
     {
         if (_mediaPlayer.IsPlaying) _mediaPlayer.Pause();
+        else if (_mediaPlayer.State is VLCState.Ended or VLCState.Stopped) PlayFromCurrentFile();
         else _mediaPlayer.Play();
     }
 

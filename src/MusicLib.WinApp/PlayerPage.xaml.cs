@@ -18,7 +18,9 @@ public sealed partial class PlayerPage : Page
 
     private bool _playRegistered;
     private bool _userSeeking;
+    private float? _pendingSeek;
     private DispatcherQueueTimer _timer = null!;
+
     public PlayerPage()
     {
         InitializeComponent();
@@ -32,6 +34,7 @@ public sealed partial class PlayerPage : Page
         App.PendingPlayerContext = null;
         var (track, dataDir, homePath) = context;
         _track = track;
+
         _settings = DeviceSettings.Load(Path.Combine(dataDir, "settings.json"));
         _home = new LibraryHome(homePath);
         _db = new LibraryDatabase(Path.Combine(dataDir, "library.db3"));
@@ -48,17 +51,30 @@ public sealed partial class PlayerPage : Page
         {
             PlayPauseButton.Content = "Pause";
             if (!_playRegistered) { _playRegistered = true; RegisterPlay(); }
+            if (_pendingSeek is { } seek && _mediaPlayer.IsSeekable)
+            {
+                _mediaPlayer.Position = seek;
+                _pendingSeek = null;
+            }
         });
         _mediaPlayer.Paused += (_, _) => DispatcherQueue.TryEnqueue(() => PlayPauseButton.Content = "Play");
         _mediaPlayer.EndReached += (_, _) => DispatcherQueue.TryEnqueue(() => PlayPauseButton.Content = "Play");
 
-        using var media = new Media(_libVLC, _track.FilePath, FromType.FromPath);
-        _mediaPlayer.Play(media);
+        PlayFromCurrentFile();
 
         _timer = DispatcherQueue.CreateTimer();
         _timer.Interval = TimeSpan.FromMilliseconds(500);
         _timer.Tick += (_, _) => UpdateProgress();
         _timer.Start();
+    }
+
+    // Once playback reaches the end, LibVLC tears the stream down — just setting Position
+    // afterward does nothing. Restarting the media and applying the seek once it's playing
+    // again is what actually resumes it.
+    private void PlayFromCurrentFile()
+    {
+        using var media = new Media(_libVLC, _track.FilePath, FromType.FromPath);
+        _mediaPlayer.Play(media);
     }
 
     private void UpdateProgress()
@@ -81,13 +97,23 @@ public sealed partial class PlayerPage : Page
 
     private void OnSeekReleased(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
-        if (_mediaPlayer.IsSeekable) _mediaPlayer.Position = (float)(SeekSlider.Value / 1000.0);
+        var fraction = (float)(SeekSlider.Value / 1000.0);
+        if (_mediaPlayer.State is VLCState.Ended or VLCState.Stopped)
+        {
+            _pendingSeek = fraction;
+            PlayFromCurrentFile();
+        }
+        else if (_mediaPlayer.IsSeekable)
+        {
+            _mediaPlayer.Position = fraction;
+        }
         _userSeeking = false;
     }
 
     private void OnPlayPauseClick(object sender, RoutedEventArgs e)
     {
         if (_mediaPlayer.IsPlaying) _mediaPlayer.Pause();
+        else if (_mediaPlayer.State is VLCState.Ended or VLCState.Stopped) PlayFromCurrentFile();
         else _mediaPlayer.Play();
     }
 

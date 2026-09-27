@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Navigation;
+using Microsoft.UI.Xaml.Input;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 using MusicLib.Core;
@@ -79,9 +80,11 @@ public sealed partial class LibraryPage : Page
         }
     }
 
-    private void OnStarTapped(object sender, RoutedEventArgs e)
+    private void OnStarClick(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is not TrackItem item) return;
+        // A Button consumes its own click, unlike the earlier TextBlock+Tapped attempt —
+        // that's what actually stops this from also being read as a row click.
+        if ((sender as FrameworkElement)?.DataContext is not TrackItem item) return;
         try
         {
             var home = PrepareHome();
