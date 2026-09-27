@@ -19,13 +19,19 @@ public sealed partial class PlayerPage : Page
     private bool _playRegistered;
     private bool _userSeeking;
     private DispatcherQueueTimer _timer = null!;
+    public PlayerPage()
+    {
+        InitializeComponent();
+    }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
-        var (track, dataDir, homePath) = ((Track Track, string DataDir, string HomePath))e.Parameter;
+        var context = App.PendingPlayerContext
+            ?? throw new InvalidOperationException("PlayerPage opened without a track context.");
+        App.PendingPlayerContext = null;
+        var (track, dataDir, homePath) = context;
         _track = track;
-
         _settings = DeviceSettings.Load(Path.Combine(dataDir, "settings.json"));
         _home = new LibraryHome(homePath);
         _db = new LibraryDatabase(Path.Combine(dataDir, "library.db3"));

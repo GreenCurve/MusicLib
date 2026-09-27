@@ -73,7 +73,10 @@ public sealed partial class LibraryPage : Page
     private void OnTrackItemClick(object sender, ItemClickEventArgs e)
     {
         if (e.ClickedItem is TrackItem item)
-            Frame.Navigate(typeof(PlayerPage), (item.Track, _dataDir, PrepareHome().RootPath));
+        {
+            App.PendingPlayerContext = (item.Track, _dataDir, PrepareHome().RootPath);
+            Frame.Navigate(typeof(PlayerPage));
+        }
     }
 
     private void OnStarTapped(object sender, RoutedEventArgs e)
