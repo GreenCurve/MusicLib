@@ -5,6 +5,7 @@
 		<OutputType>WinExe</OutputType>
 		<RootNamespace>MusicLib.WinApp</RootNamespace>
 		<UseWinUI>true</UseWinUI>
+		<ApplicationManifest>app.manifest</ApplicationManifest>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<!-- Unpackaged: no MSIX, no store identity — simplest for personal use.
