@@ -4,6 +4,7 @@ using Android.OS;
 using Android.Provider;
 using Android.Views;
 using Android.Widget;
+using AndroidX.RecyclerView.Widget;
 using MusicLib.Core;
 
 // Needed to read/write real file paths (where Syncthing puts the files) on Android 11+.
@@ -18,8 +19,9 @@ public class MainActivity : Activity
     private const string DefaultHome = "/storage/emulated/0/Music/MusicLib";
 
     private EditText _pathBox = null!;
-    private TextView _log = null!;
-    private ScrollView _scroll = null!;
+    private TextView _deviceLabel = null!;
+    private TextView _status = null!;
+    private TrackListAdapter _adapter = null!;
     private DeviceSettings _settings = null!;
 
     private string DataDir => FilesDir!.AbsolutePath;
@@ -33,39 +35,47 @@ public class MainActivity : Activity
 
         _settings = DeviceSettings.Load(System.IO.Path.Combine(DataDir, "settings.json"));
 
-        var layout = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        layout.SetPadding(32, 120, 32, 32);
+        var root = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        root.SetPadding(24, 100, 24, 0);
 
         _pathBox = new EditText(this) { Text = _settings.HomePath ?? DefaultHome };
-        var grant = new Button(this) { Text = "1. Grant all-files access" };
-        var import = new Button(this) { Text = "2. Import audio/video files..." };
-        var scan = new Button(this) { Text = "3. Scan library" };
-        var list = new Button(this) { Text = "4. Show library" };
-        _log = new TextView(this);
-        _scroll = new ScrollView(this);
-        _scroll.AddView(_log);
+        _deviceLabel = new TextView(this) { TextSize = 11 };
 
-        layout.AddView(_pathBox);
-        layout.AddView(grant);
-        layout.AddView(import);
-        layout.AddView(scan);
-        layout.AddView(list);
-        layout.AddView(_scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
-        SetContentView(layout);
+        var buttons = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        var grant = new Button(this) { Text = "Grant access" };
+        var import = new Button(this) { Text = "Import..." };
+        var scan = new Button(this) { Text = "Scan" };
+        foreach (var b in new[] { grant, import, scan })
+            buttons.AddView(b, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
+
+        _status = new TextView(this) { Text = "Ready" };
+        var list = new RecyclerView(this);
+        list.SetLayoutManager(new LinearLayoutManager(this));
+        _adapter = new TrackListAdapter();
+        list.SetAdapter(_adapter);
+
+        root.AddView(_pathBox);
+        root.AddView(_deviceLabel);
+        root.AddView(buttons);
+        root.AddView(_status);
+        root.AddView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+        SetContentView(root);
 
         grant.Click += (_, _) => RequestAccess();
         import.Click += (_, _) => PickFiles();
         scan.Click += async (_, _) => await ScanAsync(scan);
-        list.Click += (_, _) => ShowLibrary();
+        _adapter.TrackClicked += OpenPlayer;
+        _adapter.FavoriteToggled += ToggleFavorite;
     }
 
     protected override void OnResume()
     {
         base.OnResume();
-        Print(HasAccess() ? "All-files access: granted" : "All-files access: NOT granted");
+        _status.Text = HasAccess() ? "All-files access: granted" : "All-files access: NOT granted — tap Grant access";
+        _deviceLabel.Text = $"Device: {_settings.DeviceName}  ({_settings.DeviceId[..8]})";
+        LoadTracks(); // also picks up favorite/play-count changes made in the player screen
     }
 
-    /// <summary>The home folder is whatever is in the text box; it is remembered in settings.</summary>
     private LibraryHome PrepareHome()
     {
         var path = _pathBox.Text?.Trim();
@@ -82,17 +92,67 @@ public class MainActivity : Activity
 
     private void RequestAccess()
     {
-        if (HasAccess()) { Print("Access already granted."); return; }
+        if (HasAccess()) { _status.Text = "Access already granted."; return; }
         var intent = new Intent(Settings.ActionManageAppAllFilesAccessPermission,
             global::Android.Net.Uri.Parse($"package:{PackageName}"));
         StartActivity(intent);
+    }
+
+    // ---- list ----
+
+    private void LoadTracks()
+    {
+        try
+        {
+            var home = PrepareHome();
+            using var db = new LibraryDatabase(DbPath);
+            var effective = StateSync.LoadEffective(db, _settings, home);
+            var rows = db.GetAllTracks()
+                .Select(t => new TrackRow(t, effective.GetValueOrDefault(t.Hash)))
+                .ToList();
+            _adapter.Submit(rows);
+        }
+        catch (Exception ex)
+        {
+            _status.Text = $"Error: {ex.Message}";
+        }
+    }
+
+    private void OpenPlayer(Track track)
+    {
+        var home = PrepareHome();
+        var intent = new Intent(this, typeof(PlayerActivity));
+        intent.PutExtra("filePath", track.FilePath);
+        intent.PutExtra("hash", track.Hash);
+        intent.PutExtra("title", track.Title);
+        intent.PutExtra("artist", track.Artist);
+        intent.PutExtra("dataDir", DataDir);
+        intent.PutExtra("homePath", home.RootPath);
+        StartActivity(intent);
+    }
+
+    private void ToggleFavorite(Track track)
+    {
+        try
+        {
+            var home = PrepareHome();
+            using var db = new LibraryDatabase(DbPath);
+            var current = StateSync.LoadEffective(db, _settings, home).GetValueOrDefault(track.Hash);
+            db.SetFavorite(track.Hash, !(current?.IsFavorite ?? false));
+            StateSync.Export(db, _settings, home);
+            LoadTracks();
+        }
+        catch (Exception ex)
+        {
+            _status.Text = $"Error: {ex.Message}";
+        }
     }
 
     // ---- import via the system file picker (works with content:// URIs) ----
 
     private void PickFiles()
     {
-        if (!HasAccess()) { Print("Grant all-files access first (button 1)."); return; }
+        if (!HasAccess()) { _status.Text = "Grant all-files access first."; return; }
         var intent = new Intent(Intent.ActionOpenDocument);
         intent.AddCategory(Intent.CategoryOpenable);
         intent.SetType("*/*");
@@ -108,17 +168,12 @@ public class MainActivity : Activity
 
         var uris = new List<global::Android.Net.Uri>();
         if (data.ClipData != null)
-        {
             for (var i = 0; i < data.ClipData.ItemCount; i++)
             {
                 var uri = data.ClipData.GetItemAt(i)?.Uri;
                 if (uri != null) uris.Add(uri);
             }
-        }
-        else if (data.Data != null)
-        {
-            uris.Add(data.Data);
-        }
+        else if (data.Data != null) uris.Add(data.Data);
 
         _ = ImportAsync(uris);
     }
@@ -133,7 +188,7 @@ public class MainActivity : Activity
             var tempDir = System.IO.Path.Combine(DataDir, "tmp");
             var items = uris.Select(u => (Uri: u, Name: GetDisplayName(u))).ToList();
 
-            Print($"Importing {items.Count} file(s)...");
+            _status.Text = $"Importing {items.Count} file(s)...";
             var summary = await Task.Run(() =>
             {
                 using var db = new LibraryDatabase(dbPath);
@@ -148,22 +203,19 @@ public class MainActivity : Activity
                         if (stream == null) { failed++; continue; }
                         if (importer.ImportStream(stream, name).WasDuplicate) duplicates++; else copied++;
                     }
-                    catch (Exception ex)
-                    {
-                        failed++;
-                        Print($"  {name}: {ex.Message}");
-                    }
+                    catch (Exception) { failed++; }
                 }
 
-                var scan = new LibraryScanner().Scan(db, new[] { home.MediaDir }, Print);
+                var scan = new LibraryScanner().Scan(db, new[] { home.MediaDir });
                 StateSync.Export(db, settings, home);
-                return $"Imported {copied}, already had {duplicates}, failed {failed}. Index: {scan}";
+                return $"Imported {copied}, already had {duplicates}, failed {failed}. {scan}";
             });
-            Print(summary);
+            _status.Text = summary;
+            LoadTracks();
         }
         catch (Exception ex)
         {
-            Print($"Import error: {ex.Message}");
+            _status.Text = $"Import error: {ex.Message}";
         }
     }
 
@@ -178,13 +230,14 @@ public class MainActivity : Activity
         return uri.LastPathSegment ?? "file";
     }
 
-    // ---- scan / show ----
+    // ---- scan ----
 
     private async Task ScanAsync(Button button)
     {
-        if (!HasAccess()) { Print("Grant all-files access first (button 1)."); return; }
+        if (!HasAccess()) { _status.Text = "Grant all-files access first."; return; }
 
         button.Enabled = false;
+        _status.Text = "Scanning...";
         try
         {
             var home = PrepareHome();
@@ -193,50 +246,20 @@ public class MainActivity : Activity
             var result = await Task.Run(() =>
             {
                 using var db = new LibraryDatabase(dbPath);
-                var r = new LibraryScanner().Scan(db, new[] { home.MediaDir }, Print);
+                var r = new LibraryScanner().Scan(db, new[] { home.MediaDir });
                 StateSync.Export(db, settings, home);
                 return r;
             });
-            Print($"Done: {result}");
+            _status.Text = $"Done: {result}";
+            LoadTracks();
         }
         catch (Exception ex)
         {
-            Print($"Error: {ex.Message}");
+            _status.Text = $"Error: {ex.Message}";
         }
         finally
         {
             button.Enabled = true;
         }
     }
-
-    private void ShowLibrary()
-    {
-        try
-        {
-            var home = PrepareHome();
-            using var db = new LibraryDatabase(DbPath);
-            var effective = StateSync.LoadEffective(db, _settings, home);
-            var others = StateSync.ReadOtherDevices(_settings, home).Count;
-            var tracks = db.GetAllTracks();
-
-            Print($"{tracks.Count} files, {db.CountUniqueHashes()} unique by hash; state from {others} other device(s)");
-            foreach (var t in tracks.Take(40))
-            {
-                effective.TryGetValue(t.Hash, out var e);
-                Print($"{(e?.IsFavorite == true ? "*" : " ")} {t.Id}  {e?.Artist ?? t.Artist} - {e?.Title ?? t.Title}  " +
-                      $"[{t.Hash[..8]}]  {t.RelPath}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Print($"Error: {ex.Message}");
-        }
-    }
-
-    // Safe to call from any thread.
-    private void Print(string message) => RunOnUiThread(() =>
-    {
-        _log.Append(message + "\n");
-        _scroll.FullScroll(FocusSearchDirection.Down);
-    });
 }

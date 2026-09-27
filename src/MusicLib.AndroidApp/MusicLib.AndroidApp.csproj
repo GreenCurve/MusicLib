@@ -12,4 +12,11 @@
 	<ItemGroup>
 		<ProjectReference Include="..\MusicLib.Core\MusicLib.Core.csproj" />
 	</ItemGroup>
+	<ItemGroup>
+		<!-- Core LibVLCSharp only — NOT LibVLCSharp.MAUI, which is what broke the Windows build.
+		     Audio plays fine with no video surface attached, so we don't need a VideoView either. -->
+		<PackageReference Include="LibVLCSharp" Version="3.9.7" />
+		<PackageReference Include="VideoLAN.LibVLC.Android" Version="3.6.5" />
+		<PackageReference Include="Xamarin.AndroidX.RecyclerView" Version="1.3.2.2" />
+	</ItemGroup>
 </Project>

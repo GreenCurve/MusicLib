@@ -24,6 +24,21 @@ public sealed class LibraryDatabase : IDisposable
 
     public Track? GetTrack(int id) => _db.Find<Track>(id);
 
+    /// <summary>
+    /// Resolves a track by its local numeric id, or by a hash prefix (any length, as
+    /// shown by 'list') — a hash prefix works the same on every device, unlike the id.
+    /// </summary>
+    public Track? Resolve(string idOrHashPrefix)
+    {
+        if (int.TryParse(idOrHashPrefix, out var id) && GetTrack(id) is { } byId) return byId;
+
+        var prefix = idOrHashPrefix.ToLowerInvariant();
+        return _db.Table<Track>().ToList()
+            .Where(t => t.Hash.StartsWith(prefix, StringComparison.Ordinal))
+            .OrderBy(t => t.Hash)
+            .FirstOrDefault();
+    }
+
     public Track? FindByHash(string hash) =>
         _db.Table<Track>().Where(t => t.Hash == hash).FirstOrDefault();
 

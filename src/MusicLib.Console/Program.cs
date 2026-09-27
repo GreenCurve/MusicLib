@@ -110,9 +110,9 @@ switch (command)
     case "unfav":
     case "play": // for now just counts a play; real playback comes later
     {
-        if (!int.TryParse(arg, out var id) || db.GetTrack(id) is not { } track)
+        if (arg is null || db.Resolve(arg) is not { } track)
         {
-            Console.WriteLine("Give a valid track id (see 'list').");
+            Console.WriteLine("Give a valid track id or hash prefix (see 'list').");
             return 1;
         }
         if (command == "play") db.RegisterPlay(track.Hash);
@@ -123,10 +123,10 @@ switch (command)
     }
     case "tag":
     {
-        if (!int.TryParse(arg, out var tagId) || db.GetTrack(tagId) is not { } tagTrack
+        if (arg is null || db.Resolve(arg) is not { } tagTrack
             || !Enum.TryParse<TagField>(args.ElementAtOrDefault(2), true, out var field))
         {
-            Console.WriteLine("Usage: tag <id> <title|artist|album> [new value]   (no value = clear the override)");
+            Console.WriteLine("Usage: tag <id|hash> <title|artist|album> [new value]   (no value = clear the override)");
             return 1;
         }
         var value = args.Length > 3 ? string.Join(' ', args.Skip(3)) : null;
@@ -182,9 +182,9 @@ static int Usage()
           roots                     folders that 'scan' covers
           scan                      rebuild the index from the files
           list [--fav]
-          fav <id> | unfav <id>
-          play <id>                 counts a play (no audio yet)
-          tag <id> title|artist|album [value]   edit a tag without touching the file
+          fav <id|hash> | unfav <id|hash>
+          play <id|hash>             counts a play (no audio yet)
+          tag <id|hash> title|artist|album [value]   edit a tag without touching the file
           sync                      write this device's state file, show other devices
           stats
         """);
