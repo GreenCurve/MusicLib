@@ -35,6 +35,11 @@ public class MainActivity : Activity
 
         _settings = DeviceSettings.Load(System.IO.Path.Combine(DataDir, "settings.json"));
 
+        // Android 13+: the playback notification needs this runtime permission to be visible.
+        if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu &&
+            CheckSelfPermission(global::Android.Manifest.Permission.PostNotifications) != global::Android.Content.PM.Permission.Granted)
+            RequestPermissions(new[] { global::Android.Manifest.Permission.PostNotifications }, 2001);
+
         var root = new LinearLayout(this) { Orientation = Orientation.Vertical };
         root.SetPadding(24, 100, 24, 0);
 

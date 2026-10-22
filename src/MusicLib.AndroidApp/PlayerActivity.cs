@@ -1,4 +1,6 @@
 using Android.App;
+using Android.Content;
+using Android.Content.PM;
 using Android.OS;
 using Android.Views;
 using Android.Widget;
@@ -7,18 +9,18 @@ using MusicLib.Core;
 
 namespace MusicLib.AndroidApp;
 
-[Activity(Label = "Now playing")]
+// SingleTop so tapping the playback notification reuses this screen instead of stacking a new one.
+[Activity(Label = "Now playing", LaunchMode = LaunchMode.SingleTop)]
 public class PlayerActivity : Activity
 {
-    private LibVLC _libVLC = null!;
-    private MediaPlayer _mediaPlayer = null!;
+    private PlaybackService? _service;
+    private PlayerConnection? _connection;
+    private bool _bound;
     private LibraryDatabase _db = null!;
     private DeviceSettings _settings = null!;
     private LibraryHome _home = null!;
 
-    private string _filePath = "";
     private string _hash = "";
-    private bool _playRegistered;
     private bool _userSeeking;
     private float? _pendingSeek;
 
@@ -31,11 +33,12 @@ public class PlayerActivity : Activity
     private Handler _handler = null!;
     private Java.Lang.Runnable _tick = null!;
 
+    private MediaPlayer? Player => _service?.Player;
+
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         base.OnCreate(savedInstanceState);
 
-        _filePath = Intent?.GetStringExtra("filePath") ?? "";
         _hash = Intent?.GetStringExtra("hash") ?? "";
         var title = Intent?.GetStringExtra("title") ?? "";
         var artist = Intent?.GetStringExtra("artist") ?? "";
@@ -76,63 +79,110 @@ public class PlayerActivity : Activity
         UpdateFavStar();
         _favStar.Click += (_, _) => ToggleFavorite();
         _playPause.Click += (_, _) => TogglePlayPause();
-        stop.Click += (_, _) => { _mediaPlayer.Stop(); Finish(); };
+        stop.Click += (_, _) => { _service?.StopPlayback(); Finish(); };
         _seekBar.StartTrackingTouch += (_, _) => _userSeeking = true;
         _seekBar.StopTrackingTouch += (_, e) =>
         {
             _userSeeking = false;
+            var player = Player;
+            if (player == null) return;
             var fraction = e.SeekBar!.Progress / 1000f;
-            if (_mediaPlayer.State is VLCState.Ended or VLCState.Stopped)
+            if (player.State is VLCState.Ended or VLCState.Stopped)
             {
                 _pendingSeek = fraction;
-                PlayFromCurrentFile();
+                _service?.PlayFile();
             }
-            else if (_mediaPlayer.IsSeekable)
+            else if (player.IsSeekable)
             {
-                _mediaPlayer.Position = fraction;
+                player.Position = fraction;
             }
         };
 
-        // Audio-only: no video output is attached, so this also works fine for the
-        // .mp4 files in the library — LibVLC just decodes and plays their audio track.
-        _libVLC = new LibVLC();
-        _mediaPlayer = new MediaPlayer(_libVLC);
-        _mediaPlayer.Playing += (_, _) => RunOnUiThread(() =>
-        {
-            _playPause.Text = "Pause";
-            if (!_playRegistered) { _playRegistered = true; RegisterPlay(); }
-            if (_pendingSeek is { } seek && _mediaPlayer.IsSeekable)
-            {
-                _mediaPlayer.Position = seek;
-                _pendingSeek = null;
-            }
-        });
-        _mediaPlayer.Paused += (_, _) => RunOnUiThread(() => _playPause.Text = "Play");
-        _mediaPlayer.EndReached += (_, _) => RunOnUiThread(() => _playPause.Text = "Play");
-
-        PlayFromCurrentFile();
+        // Hand playback to the foreground service. A fresh tap from the track list restarts the
+        // track; rotation or a notification tap (an existing session) must not.
+        var fromNotification = Intent?.GetBooleanExtra(PlaybackService.ExtraFromNotification, false) ?? false;
+        var svcIntent = new Intent(this, typeof(PlaybackService));
+        if (Intent?.Extras != null) svcIntent.PutExtras(Intent.Extras);
+        svcIntent.PutExtra(PlaybackService.ExtraRestart, savedInstanceState == null && !fromNotification);
+        StartForegroundService(svcIntent);
 
         _handler = new Handler(Looper.MainLooper!);
         _tick = new Java.Lang.Runnable(UpdateProgress);
+    }
+
+    protected override void OnStart()
+    {
+        base.OnStart();
+        _connection = new PlayerConnection(OnServiceChanged);
+        _bound = BindService(new Intent(this, typeof(PlaybackService)), _connection, Bind.AutoCreate);
+        _handler.RemoveCallbacks(_tick);
         _handler.PostDelayed(_tick, 500);
     }
 
-    // Once playback reaches the end, LibVLC tears the stream down — just setting Position
-    // afterward does nothing. Restarting the media and applying the seek once it's playing
-    // again is what actually resumes it.
-    private void PlayFromCurrentFile()
+    protected override void OnStop()
     {
-        using var media = new Media(_libVLC, _filePath, FromType.FromPath);
-        _mediaPlayer.Play(media);
+        base.OnStop();
+        _handler.RemoveCallbacks(_tick);
+        Detach();   // the service (and the music) keeps running without us
+    }
+
+    private void OnServiceChanged(PlaybackService? service)
+    {
+        if (service == null) { _service = null; return; }   // service went away
+
+        _service = service;
+        service.Playing += OnServicePlaying;
+        service.Paused += OnServicePaused;
+        service.Ended += OnServiceEnded;
+
+        // Playback may have started before we finished binding, so sync the UI to the current state.
+        if (service.Player?.IsPlaying == true) HandlePlaying();
+        else _playPause.Text = "Play";
+    }
+
+    private void Detach()
+    {
+        if (_service != null)
+        {
+            _service.Playing -= OnServicePlaying;
+            _service.Paused -= OnServicePaused;
+            _service.Ended -= OnServiceEnded;
+            _service = null;
+        }
+        if (_bound && _connection != null)
+        {
+            UnbindService(_connection);
+            _bound = false;
+        }
+    }
+
+    private void OnServicePlaying() => RunOnUiThread(HandlePlaying);
+    private void OnServicePaused() => RunOnUiThread(() => _playPause.Text = "Play");
+    private void OnServiceEnded() => RunOnUiThread(() => _playPause.Text = "Play");
+
+    private void HandlePlaying()
+    {
+        _playPause.Text = "Pause";
+        if (_service is { PlayRegistered: false } service)
+        {
+            service.PlayRegistered = true;
+            RegisterPlay();
+        }
+        if (_pendingSeek is { } seek && Player is { IsSeekable: true } player)
+        {
+            player.Position = seek;
+            _pendingSeek = null;
+        }
     }
 
     private void UpdateProgress()
     {
-        if (!_userSeeking && _mediaPlayer.Length > 0)
+        var player = Player;
+        if (!_userSeeking && player != null && player.Length > 0)
         {
-            _seekBar.Progress = (int)(_mediaPlayer.Position * 1000);
-            _elapsed.Text = FormatMs(_mediaPlayer.Time);
-            _duration.Text = FormatMs(_mediaPlayer.Length);
+            _seekBar.Progress = (int)(player.Position * 1000);
+            _elapsed.Text = FormatMs(player.Time);
+            _duration.Text = FormatMs(player.Length);
         }
         _handler.PostDelayed(_tick, 500);
     }
@@ -145,9 +195,11 @@ public class PlayerActivity : Activity
 
     private void TogglePlayPause()
     {
-        if (_mediaPlayer.IsPlaying) _mediaPlayer.Pause();
-        else if (_mediaPlayer.State is VLCState.Ended or VLCState.Stopped) PlayFromCurrentFile();
-        else _mediaPlayer.Play();
+        var player = Player;
+        if (player == null) return;
+        if (player.IsPlaying) player.Pause();
+        else if (player.State is VLCState.Ended or VLCState.Stopped) _service?.PlayFile();
+        else player.Play();
     }
 
     // Registered once, when playback first starts — no "played 50%" threshold yet.
@@ -168,16 +220,15 @@ public class PlayerActivity : Activity
     private void UpdateFavStar()
     {
         var current = StateSync.LoadEffective(_db, _settings, _home).GetValueOrDefault(_hash);
-        _favStar.Text = current?.IsFavorite == true ? "\u2605" : "\u2606";
+        _favStar.Text = current?.IsFavorite == true ? "★" : "☆";
     }
 
     protected override void OnDestroy()
     {
         base.OnDestroy();
         _handler.RemoveCallbacks(_tick);
-        _mediaPlayer.Stop();
-        _mediaPlayer.Dispose();
-        _libVLC.Dispose();
+        Detach();
+        // Deliberately NOT stopping the player: it belongs to PlaybackService now.
         _db.Dispose();
     }
 }
