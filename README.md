@@ -22,5 +22,5 @@ path the app shows in its text box (default /storage/emulated/0/Music/MusicLib).
 
 ## Test
 1. Import files on Windows, let Syncthing copy them, tap "Scan library" on the phone.
-2. `fav` a track on Windows, wait for Syncthing, tap "Show library" on the phone: it shows a *.
+2. `fav` a track on Windows and wait for Syncthing. (Favorites and play counts are not shown in the app UI for now; they are still stored and synced.)
 3. Import a file from the phone (button 2); it appears on Windows after Syncthing + `scan`.

@@ -17,6 +17,7 @@ public sealed partial class LibraryPage : Page
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MusicLib");
     private DeviceSettings _settings = null!;
     private readonly ObservableCollection<TrackItem> _items = new();
+    private string? _selectedHash;
 
     private string DbPath => Path.Combine(_dataDir, "library.db3");
 
@@ -24,6 +25,7 @@ public sealed partial class LibraryPage : Page
     {
         InitializeComponent();
         TrackList.ItemsSource = _items;
+        Player.PlayStarted += RegisterPlay;
 
         // Reuses the SAME local data folder as the console app, so this shares its
         // device id, index and settings rather than starting a brand-new "device".
@@ -36,7 +38,7 @@ public sealed partial class LibraryPage : Page
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
-        LoadTracks(); // also picks up favorite/play changes made on the player page
+        LoadTracks();
     }
 
     private LibraryHome PrepareHome()
@@ -61,9 +63,14 @@ public sealed partial class LibraryPage : Page
             var home = PrepareHome();
             using var db = new LibraryDatabase(DbPath);
             var effective = StateSync.LoadEffective(db, _settings, home);
+            var items = db.GetAllTracks()
+                .Select(t => new TrackItem { Track = t, State = effective.GetValueOrDefault(t.Hash) })
+                .OrderBy(i => i.Title, StringComparer.CurrentCultureIgnoreCase)   // alphabetical by track name
+                .ToList();
             _items.Clear();
-            foreach (var t in db.GetAllTracks())
-                _items.Add(new TrackItem { Track = t, State = effective.GetValueOrDefault(t.Hash) });
+            foreach (var item in items) _items.Add(item);
+            // The list was rebuilt, so re-apply the highlight on the track that is playing.
+            TrackList.SelectedItem = _items.FirstOrDefault(i => i.Track.Hash == _selectedHash);
         }
         catch (Exception ex)
         {
@@ -71,28 +78,24 @@ public sealed partial class LibraryPage : Page
         }
     }
 
+    // Clicking a row selects it and starts playing it in the playback block below.
     private void OnTrackItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is TrackItem item)
-        {
-            App.PendingPlayerContext = (item.Track, _dataDir, PrepareHome().RootPath);
-            Frame.Navigate(typeof(PlayerPage));
-        }
+        if (e.ClickedItem is not TrackItem item) return;
+        _selectedHash = item.Track.Hash;
+        Player.Play(item);
     }
 
-    private void OnStarClick(object sender, RoutedEventArgs e)
+    // Plays are still counted and synced (no UI for it right now) so the data isn't lost
+    // while the play-count display is switched off.
+    private void RegisterPlay(Track track)
     {
-        // A Button consumes its own click, unlike the earlier TextBlock+Tapped attempt —
-        // that's what actually stops this from also being read as a row click.
-        if ((sender as FrameworkElement)?.DataContext is not TrackItem item) return;
         try
         {
             var home = PrepareHome();
             using var db = new LibraryDatabase(DbPath);
-            var current = StateSync.LoadEffective(db, _settings, home).GetValueOrDefault(item.Track.Hash);
-            db.SetFavorite(item.Track.Hash, !(current?.IsFavorite ?? false));
+            db.RegisterPlay(track.Hash);
             StateSync.Export(db, _settings, home);
-            LoadTracks();
         }
         catch (Exception ex)
         {

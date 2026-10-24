@@ -37,7 +37,6 @@ public class PlayerConnection : Java.Lang.Object, IServiceConnection
 public class PlaybackService : Service
 {
     public const string ExtraRestart = "restart";
-    public const string ExtraFromNotification = "fromNotification";
     public const string ActionStop = "com.companyname.musiclib.STOP";
 
     private const string ChannelId = "playback";
@@ -47,12 +46,12 @@ public class PlaybackService : Service
     private MediaPlayer? _player;
     private PowerManager.WakeLock? _wakeLock;
     private IBinder? _binder;
-    private Bundle? _openExtras;   // extras PlayerActivity needs, replayed by the notification tap
-    private string _title = "";
-    private string _artist = "";
 
     public MediaPlayer? Player => _player;
     public string FilePath { get; private set; } = "";
+    public string Hash { get; private set; } = "";
+    public string Title { get; private set; } = "";
+    public string Artist { get; private set; } = "";
     public bool PlayRegistered { get; set; }
 
     // Raised on LibVLC's threads — subscribers must marshal to the UI thread themselves.
@@ -101,9 +100,9 @@ public class PlaybackService : Service
         var restart = intent.GetBooleanExtra(ExtraRestart, true);
 
         FilePath = filePath;
-        _title = intent.GetStringExtra("title") ?? "";
-        _artist = intent.GetStringExtra("artist") ?? "";
-        _openExtras = intent.Extras != null ? new Bundle(intent.Extras) : null;
+        Hash = intent.GetStringExtra("hash") ?? "";
+        Title = intent.GetStringExtra("title") ?? "";
+        Artist = intent.GetStringExtra("artist") ?? "";
 
         EnterForeground();   // must happen within a few seconds of StartForegroundService
 
@@ -136,9 +135,7 @@ public class PlaybackService : Service
 
     private Notification BuildNotification()
     {
-        var open = new Intent(this, typeof(PlayerActivity));
-        if (_openExtras != null) open.PutExtras(_openExtras);
-        open.PutExtra(ExtraFromNotification, true);
+        var open = new Intent(this, typeof(MainActivity));
         open.SetFlags(ActivityFlags.SingleTop | ActivityFlags.ClearTop);
         var contentPi = PendingIntent.GetActivity(this, 0, open,
             PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable);
@@ -148,8 +145,8 @@ public class PlaybackService : Service
 
         return new Notification.Builder(this, ChannelId)
             .SetSmallIcon(global::Android.Resource.Drawable.IcMediaPlay)
-            .SetContentTitle(string.IsNullOrEmpty(_title) ? "MusicLib" : _title)
-            .SetContentText(_artist)
+            .SetContentTitle(string.IsNullOrEmpty(Title) ? "MusicLib" : Title)
+            .SetContentText(Artist)
             .SetContentIntent(contentPi)
             .SetOngoing(true)
             .AddAction(global::Android.Resource.Drawable.IcMenuCloseClearCancel, "Stop", stopPi)
